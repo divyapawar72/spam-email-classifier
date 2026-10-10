@@ -1,8 +1,11 @@
+from pathlib import Path
+import joblib
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -11,268 +14,125 @@ from sklearn.metrics import (
     confusion_matrix
 )
 
-
-# ============================================================
-# 1. LOAD DATASET
-# ============================================================
-
-df = pd.read_csv("email.csv")
-
-print("\nDataset loaded successfully!")
-print(df.head())
-
-print("\nDataset shape:")
-print(df.shape)
-
-print("\nColumns:")
-print(df.columns)
+BASE_DIR = Path(__file__).resolve().parent
+DATA_PATH = BASE_DIR / "email.csv"
+MODEL_PATH = BASE_DIR / "spam_model.joblib"
+MATRIX_PATH = BASE_DIR / "confusion_matrix.png"
 
 
-# ============================================================
-# 2. CLEAN DATA
-# ============================================================
+def main():
+    if not DATA_PATH.exists():
+        raise FileNotFoundError(
+            f"Dataset not found: {DATA_PATH}\n"
+            "Place email.csv beside spammodel.py."
+        )
 
-# Keep only the columns we need
-df = df[["Category", "Message"]]
+    df = pd.read_csv(DATA_PATH)
 
-# Remove missing values
-df = df.dropna()
+    required_columns = {"Category", "Message"}
+    if not required_columns.issubset(df.columns):
+        raise ValueError(
+            "email.csv must contain Category and Message columns."
+        )
 
-# Remove duplicate messages
-df = df.drop_duplicates()
+    df = df[["Category", "Message"]].dropna().copy()
+    df["Category"] = df["Category"].astype(str).str.strip().str.lower()
+    df["Message"] = df["Message"].astype(str).str.strip()
+    df = df[df["Category"].isin(["ham", "spam"])]
+    df = df[df["Message"] != ""]
+    df = df.drop_duplicates()
 
-print("\nDataset after cleaning:")
-print(df.shape)
+    df["label"] = df["Category"].map({"ham": 0, "spam": 1})
 
-print("\nClass distribution:")
-print(df["Category"].value_counts())
+    if df["label"].nunique() != 2:
+        raise ValueError("The dataset must contain both ham and spam messages.")
 
+    X = df["Message"]
+    y = df["label"]
 
-# ============================================================
-# 3. CONVERT LABELS
-# ============================================================
-
-# ham = 0
-# spam = 1
-
-# ============================================================
-# 3. CONVERT LABELS
-# ============================================================
-
-# Clean the Category column first
-df["Category"] = (
-    df["Category"]
-    .astype(str)
-    .str.strip()
-    .str.lower()
-)
-
-# Convert:
-# ham  -> 0
-# spam -> 1
-df["label"] = df["Category"].map({
-    "ham": 0,
-    "spam": 1
-})
-
-# Check if any labels could not be converted
-print("\nMissing labels after conversion:")
-print(df["label"].isna().sum())
-
-# Remove rows where the label could not be converted
-df = df.dropna(subset=["label"])
-
-# Convert labels to integers
-df["label"] = df["label"].astype(int)
-
-print("\nLabel distribution:")
-print(df["label"].value_counts())
-
-
-# ============================================================
-# 4. INPUT AND OUTPUT
-# ============================================================
-
-X = df["Message"]
-y = df["label"]
-
-
-# ============================================================
-# 5. TRAIN / TEST SPLIT
-# ============================================================
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
-    test_size=0.20,
-    stratify=y,
-    random_state=42
-)
-
-print("\nTraining samples:", len(X_train))
-print("Testing samples:", len(X_test))
-
-
-# ============================================================
-# 6. TF-IDF
-# ============================================================
-
-tfidf = TfidfVectorizer(
-    lowercase=True,
-    strip_accents="unicode",
-    sublinear_tf=True,
-    ngram_range=(1, 2),
-    min_df=1,
-    max_df=0.98,
-    max_features=50000
-)
-
-X_train_tfidf = tfidf.fit_transform(X_train)
-
-X_test_tfidf = tfidf.transform(X_test)
-
-print("\nTF-IDF complete!")
-
-print("Training matrix shape:")
-print(X_train_tfidf.shape)
-
-print("Testing matrix shape:")
-print(X_test_tfidf.shape)
-
-
-# ============================================================
-# 7. LOGISTIC REGRESSION
-# ============================================================
-
-model = LogisticRegression(
-    C=5,
-    max_iter=2000,
-    class_weight="balanced",
-    random_state=42
-)
-
-print("\nTraining Logistic Regression...")
-
-model.fit(
-    X_train_tfidf,
-    y_train
-)
-
-print("Training completed!")
-
-
-# ============================================================
-# 8. PREDICTION
-# ============================================================
-
-y_pred = model.predict(X_test_tfidf)
-
-
-# ============================================================
-# 9. ACCURACY
-# ============================================================
-
-accuracy = accuracy_score(
-    y_test,
-    y_pred
-)
-
-print("\n================================")
-print("MODEL PERFORMANCE")
-print("================================")
-
-print(
-    f"Accuracy: {accuracy * 100:.2f}%"
-)
-
-
-# ============================================================
-# 10. CLASSIFICATION REPORT
-# ============================================================
-
-print("\nClassification Report:")
-
-print(
-    classification_report(
-        y_test,
-        y_pred,
-        target_names=["Ham", "Spam"]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=0.20,
+        stratify=y,
+        random_state=42
     )
-)
+
+    model = Pipeline([
+        ("tfidf", TfidfVectorizer(
+            lowercase=True,
+            strip_accents="unicode",
+            sublinear_tf=True,
+            ngram_range=(1, 2),
+            max_df=0.98,
+            max_features=50000
+        )),
+        ("classifier", LogisticRegression(
+            C=5,
+            max_iter=2000,
+            class_weight="balanced",
+            random_state=42
+        ))
+    ])
+
+    print("Training spam detection model...")
+    model.fit(X_train, y_train)
+
+    predictions = model.predict(X_test)
+    accuracy = accuracy_score(y_test, predictions)
+
+    print(f"\nDataset rows after cleaning: {len(df)}")
+    print(f"Training samples: {len(X_train)}")
+    print(f"Testing samples: {len(X_test)}")
+    print(f"\nTest accuracy: {accuracy * 100:.2f}%")
+
+    print("\nClassification Report:")
+    print(classification_report(
+        y_test,
+        predictions,
+        labels=[0, 1],
+        target_names=["Ham", "Spam"],
+        zero_division=0
+    ))
+
+    cm = confusion_matrix(y_test, predictions, labels=[0, 1])
+
+    print("\nConfusion Matrix:")
+    print(cm)
+
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        xticklabels=["Ham", "Spam"],
+        yticklabels=["Ham", "Spam"],
+        cmap="rocket_r"
+    )
+    plt.xlabel("Predicted Label")
+    plt.ylabel("Actual Label")
+    plt.title("Spam Detection - Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(MATRIX_PATH, dpi=300)
+    plt.close()
+
+    joblib.dump(model, MODEL_PATH)
+
+    print(f"\nSaved trained model: {MODEL_PATH.name}")
+    print(f"Saved confusion matrix: {MATRIX_PATH.name}")
+
+    examples = [
+        "Congratulations! You have won a free prize. Click now!",
+        "Hey, are we meeting for lunch today?",
+        "URGENT! You have won £1000. Call now!",
+        "Can you send me the notes from today's class?"
+    ]
+
+    print("\nSample predictions:")
+    for message, prediction in zip(examples, model.predict(examples)):
+        label = "SPAM" if prediction == 1 else "HAM"
+        print(f"{label}: {message}")
 
 
-# ============================================================
-# 11. CONFUSION MATRIX
-# ============================================================
-
-cm = confusion_matrix(
-    y_test,
-    y_pred
-)
-
-print("\nConfusion Matrix:")
-
-print(cm)
-
-
-# ============================================================
-# 12. CONFUSION MATRIX VISUALIZATION
-# ============================================================
-
-plt.figure(figsize=(6, 5))
-
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt="d",
-    xticklabels=["Ham", "Spam"],
-    yticklabels=["Ham", "Spam"]
-)
-
-plt.xlabel("Predicted Label")
-plt.ylabel("Actual Label")
-plt.title("Spam Detection - Confusion Matrix")
-
-plt.tight_layout()
-
-plt.savefig(
-    "confusion_matrix.png",
-    dpi=300
-)
-
-plt.show()
-
-
-# ============================================================
-# 13. TEST CUSTOM MESSAGES
-# ============================================================
-
-custom_messages = [
-    "Congratulations! You have won a free prize. Click now!",
-    "Hey, are we meeting for lunch today?",
-    "URGENT! You have won £1000. Call now!",
-    "Can you send me the notes from today's class?"
-]
-
-custom_tfidf = tfidf.transform(custom_messages)
-
-custom_predictions = model.predict(custom_tfidf)
-
-print("\n================================")
-print("CUSTOM MESSAGE PREDICTIONS")
-print("================================")
-
-for message, prediction in zip(
-    custom_messages,
-    custom_predictions
-):
-
-    if prediction == 1:
-        result = "SPAM"
-    else:
-        result = "HAM"
-
-    print("\nMessage:")
-    print(message)
-
-    print("Prediction:", result)
+if __name__ == "__main__":
+    main()
